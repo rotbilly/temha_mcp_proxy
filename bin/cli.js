@@ -39,53 +39,6 @@ function writeJSON(path,obj){ writeFileSync(path, JSON.stringify(obj,null,2),'ut
 function b64url(buf){ return Buffer.from(buf).toString('base64').replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); }
 function genPKCE(){ const code_verifier=b64url(randomBytes(32)); const challenge=createHash('sha256').update(code_verifier).digest(); return {code_verifier, code_challenge:b64url(challenge)}; }
 
-function openInBrowser(u) {
-    try {
-        if (process.platform === 'win32') {
-            // 1) PowerShell로 여는 것이 가장 안전 (메타문자 문제 없음)
-            const ps = spawn('powershell.exe',
-                ['-NoProfile', '-NonInteractive', 'Start-Process', u],
-                { stdio: 'ignore', shell: false, detached: true }
-            );
-            ps.unref();
-            return;
-        } else if (process.platform === 'darwin') {
-            const p = spawn('open', [u], { stdio: 'ignore', shell: false, detached: true });
-            p.unref();
-            return;
-        } else {
-            const p = spawn('xdg-open', [u], { stdio: 'ignore', shell: false, detached: true });
-            p.unref();
-            return;
-        }
-    } catch (e) {
-        // 2) Windows 보조 폴백들
-        if (process.platform === 'win32') {
-            try {
-                // cmd /c start "" "<url>"  (URL을 반드시 따옴표로 감싸기)
-                const quoted = `"${u.replace(/"/g, '""')}"`;
-                const p = spawn('cmd', ['/c', 'start', '', quoted], {
-                    stdio: 'ignore',
-                    shell: false,
-                    windowsVerbatimArguments: true,
-                    detached: true
-                });
-                p.unref();
-                return;
-            } catch {}
-            try {
-                // 오래된 방식이지만 확실한 폴백
-                const p = spawn('rundll32', ['url.dll,FileProtocolHandler', u], {
-                    stdio: 'ignore', shell: false, detached: true
-                });
-                p.unref();
-                return;
-            } catch {}
-        }
-        console.error('[proxy] Open manually:', u, e?.message || e);
-    }
-}
-
 // --------------------------- DISCOVERY (RFC 9728 + 8414) ---------------------------
 async function fetchJSON(u){ const r = await fetch(u); if(!r.ok) throw new Error(`${u} ${r.status}`); return r.json(); }
 
@@ -181,36 +134,58 @@ async function ensureToken(as,client){
     return await interactiveLogin(as,client);
 }
 
-async function interactiveLogin(as,client){
-    const {code_verifier,code_challenge}=genPKCE(); const state=b64url(randomBytes(16));
-    const authURL=new URL(as.authorization_endpoint);
-    // 필요 시 기존 쿼리를 보존하면서 추가; 일반적으로 authorization_endpoint는 쿼리가 없음
-    authURL.searchParams.set('response_type','code');
-    authURL.searchParams.set('client_id',client.client_id);
-    authURL.searchParams.set('redirect_uri',CONFIG.OAUTH_REDIRECT_URI);
-    authURL.searchParams.set('scope',CONFIG.OAUTH_SCOPES);
-    authURL.searchParams.set('code_challenge_method','S256');
-    authURL.searchParams.set('code_challenge',code_challenge);
-    authURL.searchParams.set('state',state);
+function appendQuery(base, params) {
+    // base에 기존 query가 있으면 병합
+    const [origin, existing] = base.split('?', 2);
+    const out = new URLSearchParams(existing || '');
+    for (const [k, v] of Object.entries(params)) {
+        if (v !== undefined && v !== null) out.set(k, String(v));
+    }
+    return `${origin}?${out.toString()}`;
+}
 
-    const {code}=await new Promise((resolve,reject)=>{
-        const srv=createServer((req,res)=>{
-            try{
-                const url=new URL(req.url,CONFIG.OAUTH_REDIRECT_URI);
-                if(url.pathname!=='/callback'){res.writeHead(404).end();return;}
-                const rc=url.searchParams.get('code'); const st=url.searchParams.get('state');
-                if(!rc||st!==state){res.writeHead(400).end('OAuth failed');reject(new Error('state mismatch'));return;}
-                res.writeHead(200,{'Content-Type':'text/plain'});
+async function interactiveLogin(as, client) {
+    const { code_verifier, code_challenge } = genPKCE();
+    const state = b64url(randomBytes(16));
+
+    // ⚠️ 문자열로 조합 (값은 반드시 인코딩됨: URLSearchParams가 해줌)
+    const authHref = appendQuery(
+        as.authorization_endpoint,
+        {
+            response_type: 'code',
+            client_id: client.client_id,
+            redirect_uri: CONFIG.OAUTH_REDIRECT_URI,  // 자동 인코딩됨
+            scope: CONFIG.OAUTH_SCOPES,               // "openid profile mcp" → "openid%20profile%20mcp"
+            code_challenge_method: 'S256',
+            code_challenge,
+            state
+        }
+    );
+
+    const { code } = await new Promise((resolve, reject) => {
+        const srv = createServer((req, res) => {
+            try {
+                const url = new URL(req.url, CONFIG.OAUTH_REDIRECT_URI);
+                if (url.pathname !== '/callback') { res.writeHead(404).end(); return; }
+                const rc = url.searchParams.get('code');
+                const st = url.searchParams.get('state');
+                if (!rc || st !== state) { res.writeHead(400).end('OAuth failed'); reject(new Error('state mismatch')); return; }
+                res.writeHead(200, { 'Content-Type': 'text/plain' });
                 res.end('Login complete. You can close this window.');
-                resolve({code:rc});
-                setTimeout(()=>srv.close(),100);
-            }catch(e){reject(e);} });
+                resolve({ code: rc });
+                setTimeout(() => srv.close(), 100);
+            } catch (e) { reject(e); }
+        });
         const { port } = new URL(CONFIG.OAUTH_REDIRECT_URI);
-        // ✅ 쿼리 손실 방지를 위해 href 사용 + 안전한 오프너
-        srv.listen(Number(port)||38573,'127.0.0.1',()=>openInBrowser(authURL.href));
+        srv.listen(Number(port) || 38573, '127.0.0.1', () => openInBrowser(authHref)); // 문자열 그대로 사용
     });
 
-    return await fetchToken(as,client,{grant_type:'authorization_code',code,redirect_uri:CONFIG.OAUTH_REDIRECT_URI,code_verifier});
+    return await fetchToken(as, client, {
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: CONFIG.OAUTH_REDIRECT_URI,
+        code_verifier
+    });
 }
 
 // ---------------------------- PROXY CORE ---------------------------

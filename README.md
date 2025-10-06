@@ -18,3 +18,18 @@ Or after publishing to npm:
 ```bash
 npx mcp-temha-proxy
 ```
+
+
+```json
+	"temha_mcp_proxy": {
+      "description": "Local STDIO ↔ Remote HTTP MCP proxy for https://mcp.temha.io (OIDC + Dynamic Registration)",
+      "command": "npx",
+      "args": [
+        "-y",
+        "github:rotbilly/temha_mcp_proxy"
+      ],
+      "env": {},
+      "cwd": null,
+      "enabled": true
+    }
+```
