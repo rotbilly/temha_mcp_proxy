@@ -39,24 +39,50 @@ function writeJSON(path,obj){ writeFileSync(path, JSON.stringify(obj,null,2),'ut
 function b64url(buf){ return Buffer.from(buf).toString('base64').replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); }
 function genPKCE(){ const code_verifier=b64url(randomBytes(32)); const challenge=createHash('sha256').update(code_verifier).digest(); return {code_verifier, code_challenge:b64url(challenge)}; }
 
-// ✅ 안전한 브라우저 오프너 (쿼리 손실 방지)
-function openInBrowser(u){
+function openInBrowser(u) {
     try {
         if (process.platform === 'win32') {
-            // cmd /c start "" "URL"
-            spawn('cmd', ['/c', 'start', '', u], {
-                stdio: 'ignore',
-                windowsVerbatimArguments: true,
-                shell: false,
-                detached: true
-            }).unref();
+            // 1) PowerShell로 여는 것이 가장 안전 (메타문자 문제 없음)
+            const ps = spawn('powershell.exe',
+                ['-NoProfile', '-NonInteractive', 'Start-Process', u],
+                { stdio: 'ignore', shell: false, detached: true }
+            );
+            ps.unref();
+            return;
         } else if (process.platform === 'darwin') {
-            spawn('open', [u], { stdio: 'ignore', shell: false, detached: true }).unref();
+            const p = spawn('open', [u], { stdio: 'ignore', shell: false, detached: true });
+            p.unref();
+            return;
         } else {
-            spawn('xdg-open', [u], { stdio: 'ignore', shell: false, detached: true }).unref();
+            const p = spawn('xdg-open', [u], { stdio: 'ignore', shell: false, detached: true });
+            p.unref();
+            return;
         }
-    } catch {
-        console.error('[proxy] Open manually:', u);
+    } catch (e) {
+        // 2) Windows 보조 폴백들
+        if (process.platform === 'win32') {
+            try {
+                // cmd /c start "" "<url>"  (URL을 반드시 따옴표로 감싸기)
+                const quoted = `"${u.replace(/"/g, '""')}"`;
+                const p = spawn('cmd', ['/c', 'start', '', quoted], {
+                    stdio: 'ignore',
+                    shell: false,
+                    windowsVerbatimArguments: true,
+                    detached: true
+                });
+                p.unref();
+                return;
+            } catch {}
+            try {
+                // 오래된 방식이지만 확실한 폴백
+                const p = spawn('rundll32', ['url.dll,FileProtocolHandler', u], {
+                    stdio: 'ignore', shell: false, detached: true
+                });
+                p.unref();
+                return;
+            } catch {}
+        }
+        console.error('[proxy] Open manually:', u, e?.message || e);
     }
 }
 
