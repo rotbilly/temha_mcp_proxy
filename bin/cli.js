@@ -39,13 +39,24 @@ function writeJSON(path,obj){ writeFileSync(path, JSON.stringify(obj,null,2),'ut
 function b64url(buf){ return Buffer.from(buf).toString('base64').replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); }
 function genPKCE(){ const code_verifier=b64url(randomBytes(32)); const challenge=createHash('sha256').update(code_verifier).digest(); return {code_verifier, code_challenge:b64url(challenge)}; }
 
-function openInBrowser(u) {
-    console.error('[proxy] Opening:', process.platform, u);
-    const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
+function openInBrowser(url) {
+    const platform = process.platform;
     try {
-        spawn(cmd, [u], {stdio: 'ignore', shell: true, detached: true});
-    } catch {
-        console.error('[proxy] Open manually:', u);
+        if (platform === 'win32') {
+            // Use cmd.exe 'start' with empty title and quoted URL to avoid & being parsed
+            spawn('cmd', ['/c', 'start', '', `"${url}"`], {
+                stdio: 'ignore',
+                windowsVerbatimArguments: true,
+                detached: true,
+                shell: false,
+            });
+        } else if (platform === 'darwin') {
+            spawn('open', [url], { stdio: 'ignore', detached: true });
+        } else {
+            spawn('xdg-open', [url], { stdio: 'ignore', detached: true });
+        }
+    } catch (e) {
+        console.error('[proxy] Please open this URL manually:\n', url);
     }
 }
 // --------------------------- DISCOVERY (RFC 9728 + 8414) ---------------------------
@@ -154,46 +165,70 @@ function appendQuery(base, params) {
 }
 
 async function interactiveLogin(as, client) {
+    if (!client || !client.client_id) throw new Error('[flow] missing client_id; DCR must complete before authorize');
+
     const { code_verifier, code_challenge } = genPKCE();
     const state = b64url(randomBytes(16));
+    const rd = new URL(CONFIG.OAUTH_REDIRECT_URI);
 
-    // ⚠️ 문자열로 조합 (값은 반드시 인코딩됨: URLSearchParams가 해줌)
-    const authHref = appendQuery(
-        as.authorization_endpoint,
-        {
-            response_type: 'code',
-            client_id: client.client_id,
-            redirect_uri: CONFIG.OAUTH_REDIRECT_URI,  // 자동 인코딩됨
-            scope: CONFIG.OAUTH_SCOPES,               // "openid profile mcp" → "openid%20profile%20mcp"
-            code_challenge_method: 'S256',
-            code_challenge,
-            state
-        }
-    );
+    const authURL = new URL(as.authorization_endpoint);
+    authURL.searchParams.set('response_type', 'code');
+    authURL.searchParams.set('client_id', client.client_id);
+    authURL.searchParams.set('redirect_uri', rd.toString());
+    authURL.searchParams.set('scope', CONFIG.OAUTH_SCOPES);
+    authURL.searchParams.set('code_challenge_method', 'S256');
+    authURL.searchParams.set('code_challenge', code_challenge);
+    authURL.searchParams.set('state', state);
 
     const { code } = await new Promise((resolve, reject) => {
         const srv = createServer((req, res) => {
             try {
-                const url = new URL(req.url, CONFIG.OAUTH_REDIRECT_URI);
-                if (url.pathname !== '/callback') { res.writeHead(404).end(); return; }
-                const rc = url.searchParams.get('code');
-                const st = url.searchParams.get('state');
-                if (!rc || st !== state) { res.writeHead(400).end('OAuth failed'); reject(new Error('state mismatch')); return; }
-                res.writeHead(200, { 'Content-Type': 'text/plain' });
-                res.end('Login complete. You can close this window.');
+                // Log raw request for debugging
+                console.error('[oauth] callback hit:', req.method, req.url);
+
+                const u = new URL(req.url, rd.toString());
+                if (u.pathname !== rd.pathname) {
+                    res.writeHead(404).end();
+                    return;
+                }
+                const rc = u.searchParams.get('code');
+                const st = u.searchParams.get('state');
+                if (!rc || st !== state) {
+                    res.writeHead(400, { 'Content-Type': 'text/plain' })
+                        .end('OAuth failed: missing code or state mismatch');
+                    reject(new Error('state mismatch or missing code'));
+                    srv.close();
+                    return;
+                }
+                res.writeHead(200, { 'Content-Type': 'text/plain' })
+                    .end('Login complete. You can close this window.');
                 resolve({ code: rc });
                 setTimeout(() => srv.close(), 100);
-            } catch (e) { reject(e); }
+            } catch (e) {
+                reject(e);
+            }
         });
-        const { port } = new URL(CONFIG.OAUTH_REDIRECT_URI);
-        srv.listen(Number(port) || 38573, '127.0.0.1', () => openInBrowser(authHref)); // 문자열 그대로 사용
+
+        // Bind exactly to the host/port from redirect_uri
+        const listenPort = Number(rd.port) || 38573;
+        const listenHost = rd.hostname || '127.0.0.1';
+
+        srv.on('error', (err) => {
+            console.error('[oauth] callback server error:', err.message);
+            reject(err);
+        });
+
+        srv.listen(listenPort, listenHost, () => {
+            console.error(`[oauth] listening for redirect on http://${listenHost}:${listenPort}${rd.pathname}`);
+            openInBrowser(authURL.toString());
+        });
     });
 
     return await fetchToken(as, client, {
         grant_type: 'authorization_code',
         code,
         redirect_uri: CONFIG.OAUTH_REDIRECT_URI,
-        code_verifier
+        code_verifier,
     });
 }
 
