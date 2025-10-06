@@ -21,7 +21,7 @@ import { spawn } from 'child_process';
 // ----------------------------- HARD-CODED CONFIG -----------------------------
 // Remote MCP endpoint for temha
 const CONFIG = {
-    REMOTE_MCP_URL: 'https://devmcp.temha.io/',
+    REMOTE_MCP_URL: 'http://127.0.0.1:4000/',
     OAUTH_REDIRECT_URI: 'http://127.0.0.1:38573/callback',
     OAUTH_SCOPES: 'openid profile mcp'
 };
