@@ -40,7 +40,7 @@ function b64url(buf){ return Buffer.from(buf).toString('base64').replace(/\+/g,'
 function genPKCE(){ const code_verifier=b64url(randomBytes(32)); const challenge=createHash('sha256').update(code_verifier).digest(); return {code_verifier, code_challenge:b64url(challenge)}; }
 
 function openInBrowser(u) {
-    console.log('[proxy] Opening:', process.platform, u);
+    console.error('[proxy] Opening:', process.platform, u);
     const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
     try {
         spawn(cmd, [u], {stdio: 'ignore', shell: true, detached: true});
