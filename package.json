@@ -1,0 +1,12 @@
+{
+  "name": "temha-mcp-proxy",
+  "version": "1.0.0",
+  "description": "Local STDIO ↔ Remote HTTP MCP proxy for https://mcp.temha.io with OIDC discovery + dynamic client registration (hardcoded config, npx/github-run)",
+  "type": "module",
+  "bin": { "mcp-temha-proxy": "./bin/cli.js" },
+  "engines": { "node": ">=18" },
+  "license": "MIT",
+  "keywords": ["mcp","model-context-protocol","oauth","oidc","proxy","stdio","sse"],
+  "author": "you",
+  "repository": {"type":"git","url":"git+https://github.com/rotbilly/temha_mcp_proxy.git"}
+}
