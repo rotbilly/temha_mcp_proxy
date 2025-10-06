@@ -1,15 +1,10 @@
 #!/usr/bin/env node
 /**
- * MCP STDIO ⇄ HTTP Proxy for https://mcp.temha.io
- * - OIDC discovery (.well-known) from REMOTE_MCP_URL root
- * - Dynamic Client Registration (public native client, PKCE)
- * - Authorization Code + PKCE (opens browser) + token refresh
- * - STDIO NDJSON framing (1 JSON per line) for clarity
- *
- * Production notes:
- * - Consider LSP-style Content-Length framing or an MCP SDK for robustness
- * - Consider secure token storage (e.g., keytar) and logging hygiene
- * - SSE/Streamable forwarding not implemented in this minimal example
+ * MCP STDIO ⇄ HTTP Proxy (PRM + AS discovery)
+ * - RFC 9728: /.well-known/oauth-protected-resource (PRM)
+ * - RFC 8414: /.well-known/oauth-authorization-server (AS metadata)
+ * - DCR (RFC 7591) + Auth Code + PKCE
+ * - STDIO NDJSON framing (1 JSON per line)
  */
 
 import { createServer } from 'http';
@@ -20,22 +15,22 @@ import { join } from 'path';
 import { spawn } from 'child_process';
 
 // ----------------------------- HARD-CODED CONFIG -----------------------------
-// Remote MCP endpoint for temha
 const CONFIG = {
-    REMOTE_MCP_URL: 'http://127.0.0.1:4000/',
+    REMOTE_MCP_URL: 'http://127.0.0.1:4000/', // your HTTP MCP endpoint
     OAUTH_REDIRECT_URI: 'http://127.0.0.1:38573/callback',
     OAUTH_SCOPES: 'openid profile mcp'
 };
 if (!CONFIG.REMOTE_MCP_URL) { console.error('[proxy] missing REMOTE_MCP_URL'); process.exit(1); }
-// Derive issuer from remote root (scheme + host)
+
+// Derive resource origin (scheme + host) for PRM discovery
 const remote = new URL(CONFIG.REMOTE_MCP_URL);
-const OIDC_ISSUER = `${remote.protocol}//${remote.host}`;
+const RESOURCE_ORIGIN = `${remote.protocol}//${remote.host}`; // e.g., https://mcp.temha.io
 
 // ------------------------- SIMPLE STORAGE -------------------------
 const STORE_DIR = join(homedir(), '.mcp-proxy', 'temha');
 mkdirSync(STORE_DIR, { recursive: true });
 const TOKENS_FILE = join(STORE_DIR, 'tokens.json');
-const DISCOVERY_FILE = join(STORE_DIR, 'oidc-discovery.json');
+const DISCOVERY_FILE = join(STORE_DIR, 'as-metadata.json'); // store AS metadata
 const CLIENT_FILE = join(STORE_DIR, 'client-metadata.json');
 
 function readJSON(path){ try{ if(existsSync(path)) return JSON.parse(readFileSync(path,'utf8')); }catch{} return null; }
@@ -45,24 +40,61 @@ function b64url(buf){ return Buffer.from(buf).toString('base64').replace(/\+/g,'
 function genPKCE(){ const code_verifier=b64url(randomBytes(32)); const challenge=createHash('sha256').update(code_verifier).digest(); return {code_verifier, code_challenge:b64url(challenge)}; }
 function openInBrowser(u){ const cmd=process.platform==='darwin'?'open':process.platform==='win32'?'start':'xdg-open'; try{spawn(cmd,[u],{stdio:'ignore',shell:true,detached:true});}catch{console.error('[proxy] Open manually:',u);} }
 
-// --------------------------- OIDC FLOW ---------------------------
-async function discover(){
-    const cached = readJSON(DISCOVERY_FILE);
-    if(cached && cached.issuer===OIDC_ISSUER) return cached;
-    const wellKnown = `${OIDC_ISSUER}/.well-known/openid-configuration`;
-    const res = await fetch(wellKnown);
-    if(!res.ok) throw new Error(`[oidc] discovery failed ${res.status}`);
-    const conf = await res.json();
-    if(!conf.authorization_endpoint || !conf.token_endpoint){ throw new Error('[oidc] invalid discovery doc'); }
-    conf.issuer = OIDC_ISSUER;
-    writeJSON(DISCOVERY_FILE, conf);
-    return conf;
+// --------------------------- DISCOVERY (RFC 9728 + 8414) ---------------------------
+async function fetchJSON(u){ const r = await fetch(u); if(!r.ok) throw new Error(`${u} ${r.status}`); return r.json(); }
+
+// RFC 9728 – protected resource metadata
+async function getPRM(resourceOrigin){
+    const url = `${resourceOrigin}/.well-known/oauth-protected-resource`;
+    return await fetchJSON(url);
 }
 
-async function dynamicRegister(conf){
+// RFC 8414 – build AS well-known URL from issuer (handles path-based issuers)
+function asWellKnownFromIssuer(issuer){
+    const iu = new URL(issuer);
+    const base = `${iu.protocol}//${iu.host}`;
+    const path = iu.pathname.replace(/\/+$/, '');
+    if (path && path !== '/') {
+        // If issuer has path, RFC 8414 places it after the well-known segment
+        return `${base}/.well-known/oauth-authorization-server${path}`;
+    }
+    return `${base}/.well-known/oauth-authorization-server`;
+}
+
+async function getASMetadata(issuer){
+    const url = asWellKnownFromIssuer(issuer);
+    const json = await fetchJSON(url);
+    // normalize issuer field
+    if (!json.issuer) json.issuer = issuer;
+    return json;
+}
+
+async function discover(){
+    // cache hit
+    const cached = readJSON(DISCOVERY_FILE);
+    if (cached && cached.issuer) return cached;
+
+    // 1) PRM
+    const prm = await getPRM(RESOURCE_ORIGIN);
+    // Common fields per RFC 9728 drafts/implementations
+    const issuer = (prm.authorization_servers?.[0]) || prm.authorization_server || prm.issuer;
+    if (!issuer) throw new Error('[prm] no authorization server listed');
+
+    // 2) AS metadata (RFC 8414)
+    const asMeta = await getASMetadata(issuer);
+    if (!asMeta.authorization_endpoint || !asMeta.token_endpoint) {
+        throw new Error('[as] invalid AS metadata: missing endpoints');
+    }
+
+    writeJSON(DISCOVERY_FILE, asMeta);
+    return asMeta;
+}
+
+// --------------------------- DCR + TOKENS ---------------------------
+async function dynamicRegister(as){
     const cached = readJSON(CLIENT_FILE);
-    if(cached && cached.issuer===conf.issuer) return cached;
-    if(!conf.registration_endpoint) throw new Error('[oidc] no registration endpoint: enable DCR or pre-provision a client');
+    if (cached && cached.issuer === as.issuer) return cached;
+    if (!as.registration_endpoint) throw new Error('[oidc] no registration endpoint: enable DCR or pre-provision a client');
     const body = {
         application_type:'native',
         grant_types:['authorization_code','refresh_token'],
@@ -72,17 +104,17 @@ async function dynamicRegister(conf){
         client_name:'MCP STDIO OAuth Proxy (temha)',
         scope:CONFIG.OAUTH_SCOPES,
     };
-    const res = await fetch(conf.registration_endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const res = await fetch(as.registration_endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     if(!res.ok) throw new Error(`[oidc] registration failed ${res.status}: ${await res.text()}`);
     const reg = await res.json();
-    const meta={issuer:conf.issuer,client_id:reg.client_id,redirect_uris:reg.redirect_uris||body.redirect_uris};
+    const meta={issuer:as.issuer,client_id:reg.client_id,redirect_uris:reg.redirect_uris||body.redirect_uris};
     writeJSON(CLIENT_FILE, meta);
     return meta;
 }
 
-async function fetchToken(conf, client, params){
+async function fetchToken(as, client, params){
     const body = new URLSearchParams({...params,client_id:client.client_id});
-    const res = await fetch(conf.token_endpoint,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});
+    const res = await fetch(as.token_endpoint,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});
     if(!res.ok) throw new Error(`[oauth] token error ${res.status}: ${await res.text()}`);
     const tok = await res.json();
     tok.expires_at=Math.floor(Date.now()/1000)+(tok.expires_in||3600)-30;
@@ -90,22 +122,22 @@ async function fetchToken(conf, client, params){
     return tok;
 }
 
-async function ensureClient(conf){ return await dynamicRegister(conf); }
+async function ensureClient(as){ return await dynamicRegister(as); }
 
-async function ensureToken(conf,client){
+async function ensureToken(as,client){
     let tok=readJSON(TOKENS_FILE);
     const now=Math.floor(Date.now()/1000);
     if(tok&&tok.expires_at>now+60) return tok;
     if(tok&&tok.refresh_token){
-        try{ return await fetchToken(conf,client,{grant_type:'refresh_token',refresh_token:tok.refresh_token}); }
+        try{ return await fetchToken(as,client,{grant_type:'refresh_token',refresh_token:tok.refresh_token}); }
         catch(e){ console.error('[oauth] refresh failed; interactive login next:', e.message); }
     }
-    return await interactiveLogin(conf,client);
+    return await interactiveLogin(as,client);
 }
 
-async function interactiveLogin(conf,client){
+async function interactiveLogin(as,client){
     const {code_verifier,code_challenge}=genPKCE(); const state=b64url(randomBytes(16));
-    const authURL=new URL(conf.authorization_endpoint);
+    const authURL=new URL(as.authorization_endpoint);
     authURL.searchParams.set('response_type','code');
     authURL.searchParams.set('client_id',client.client_id);
     authURL.searchParams.set('redirect_uri',CONFIG.OAUTH_REDIRECT_URI);
@@ -130,7 +162,7 @@ async function interactiveLogin(conf,client){
         srv.listen(Number(port)||38573,'127.0.0.1',()=>openInBrowser(authURL.toString()));
     });
 
-    return await fetchToken(conf,client,{grant_type:'authorization_code',code,redirect_uri:CONFIG.OAUTH_REDIRECT_URI,code_verifier});
+    return await fetchToken(as,client,{grant_type:'authorization_code',code,redirect_uri:CONFIG.OAUTH_REDIRECT_URI,code_verifier});
 }
 
 // ---------------------------- PROXY CORE ---------------------------
@@ -142,11 +174,11 @@ async function forwardJsonRpcToRemote(json,accessToken){
 }
 
 async function handleRequest(json){
-    const conf=await discover();
-    const client=await ensureClient(conf);
-    let tok=await ensureToken(conf,client);
+    const as=await discover();
+    const client=await ensureClient(as);
+    let tok=await ensureToken(as,client);
     try{ return await forwardJsonRpcToRemote(json,tok.access_token); }
-    catch(e){ if(e.message==='UNAUTHORIZED'){ tok=await ensureToken(conf,client); return await forwardJsonRpcToRemote(json,tok.access_token);} return {jsonrpc:'2.0',id:json.id??null,error:{code:-32001,message:String(e.message)}}; }
+    catch(e){ if(e.message==='UNAUTHORIZED'){ tok=await ensureToken(as,client); return await forwardJsonRpcToRemote(json,tok.access_token);} return {jsonrpc:'2.0',id:json.id??null,error:{code:-32001,message:String(e.message)}}; }
 }
 
 // ---------------------------- STDIO LOOP ---------------------------
@@ -162,4 +194,4 @@ process.stdin.on('data', async chunk => {
     }
 });
 process.stdin.on('end',()=>process.exit(0));
-console.error(`[proxy] STDIO ↔ HTTP(OIDC) proxy ready (issuer: ${OIDC_ISSUER}) using ${CONFIG.REMOTE_MCP_URL}`);
+console.error(`[proxy] STDIO ↔ HTTP(OAuth) proxy ready (resource: ${RESOURCE_ORIGIN}) using ${CONFIG.REMOTE_MCP_URL}`);
