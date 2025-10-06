@@ -38,7 +38,7 @@ function writeJSON(path,obj){ writeFileSync(path, JSON.stringify(obj,null,2),'ut
 
 function b64url(buf){ return Buffer.from(buf).toString('base64').replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); }
 function genPKCE(){ const code_verifier=b64url(randomBytes(32)); const challenge=createHash('sha256').update(code_verifier).digest(); return {code_verifier, code_challenge:b64url(challenge)}; }
-
+function openInBrowser(u){ const cmd=process.platform==='darwin'?'open':process.platform==='win32'?'start':'xdg-open'; try{spawn(cmd,[u],{stdio:'ignore',shell:true,detached:true});}catch{console.error('[proxy] Open manually:',u);} }
 // --------------------------- DISCOVERY (RFC 9728 + 8414) ---------------------------
 async function fetchJSON(u){ const r = await fetch(u); if(!r.ok) throw new Error(`${u} ${r.status}`); return r.json(); }
 
