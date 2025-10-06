@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * MCP STDIO ⇄ HTTP Proxy for https://mcp.temha.io
  * - OIDC discovery (.well-known) from REMOTE_MCP_URL root
