@@ -164,72 +164,36 @@ function appendQuery(base, params) {
     return `${origin}?${out.toString()}`;
 }
 
-async function interactiveLogin(as, client) {
-    if (!client || !client.client_id) throw new Error('[flow] missing client_id; DCR must complete before authorize');
+async function interactiveLogin(conf,client){
+    const {code_verifier,code_challenge}=genPKCE(); const state=b64url(randomBytes(16));
+    const authURL=new URL(conf.authorization_endpoint);
+    authURL.searchParams.set('response_type','code');
+    authURL.searchParams.set('client_id',client.client_id);
+    authURL.searchParams.set('redirect_uri',CONFIG.OAUTH_REDIRECT_URI);
+    authURL.searchParams.set('scope',CONFIG.OAUTH_SCOPES);
+    authURL.searchParams.set('code_challenge_method','S256');
+    authURL.searchParams.set('code_challenge',code_challenge);
+    authURL.searchParams.set('state',state);
 
-    const { code_verifier, code_challenge } = genPKCE();
-    const state = b64url(randomBytes(16));
-    const rd = new URL(CONFIG.OAUTH_REDIRECT_URI);
 
-    const authURL = new URL(as.authorization_endpoint);
-    authURL.searchParams.set('response_type', 'code');
-    authURL.searchParams.set('client_id', client.client_id);
-    authURL.searchParams.set('redirect_uri', rd.toString());
-    authURL.searchParams.set('scope', CONFIG.OAUTH_SCOPES);
-    authURL.searchParams.set('code_challenge_method', 'S256');
-    authURL.searchParams.set('code_challenge', code_challenge);
-    authURL.searchParams.set('state', state);
-
-    const { code } = await new Promise((resolve, reject) => {
-        const srv = createServer((req, res) => {
-            try {
-                // Log raw request for debugging
-                console.error('[oauth] callback hit:', req.method, req.url);
-
-                const u = new URL(req.url, rd.toString());
-                if (u.pathname !== rd.pathname) {
-                    res.writeHead(404).end();
-                    return;
-                }
-                const rc = u.searchParams.get('code');
-                const st = u.searchParams.get('state');
-                if (!rc || st !== state) {
-                    res.writeHead(400, { 'Content-Type': 'text/plain' })
-                        .end('OAuth failed: missing code or state mismatch');
-                    reject(new Error('state mismatch or missing code'));
-                    srv.close();
-                    return;
-                }
-                res.writeHead(200, { 'Content-Type': 'text/plain' })
-                    .end('Login complete. You can close this window.');
-                resolve({ code: rc });
-                setTimeout(() => srv.close(), 100);
-            } catch (e) {
-                reject(e);
-            }
-        });
-
-        // Bind exactly to the host/port from redirect_uri
-        const listenPort = Number(rd.port) || 38573;
-        const listenHost = rd.hostname || '127.0.0.1';
-
-        srv.on('error', (err) => {
-            console.error('[oauth] callback server error:', err.message);
-            reject(err);
-        });
-
-        srv.listen(listenPort, listenHost, () => {
-            console.error(`[oauth] listening for redirect on http://${listenHost}:${listenPort}${rd.pathname}`);
-            openInBrowser(authURL.toString());
-        });
+    const {code}=await new Promise((resolve,reject)=>{
+        const srv=createServer((req,res)=>{
+            try{
+                const url=new URL(req.url,CONFIG.OAUTH_REDIRECT_URI);
+                if(url.pathname!=='/callback'){res.writeHead(404).end();return;}
+                const rc=url.searchParams.get('code'); const st=url.searchParams.get('state');
+                if(!rc||st!==state){res.writeHead(400).end('OAuth failed');reject(new Error('state mismatch'));return;}
+                res.writeHead(200,{'Content-Type':'text/plain'});
+                res.end('Login complete. You can close this window.');
+                resolve({code:rc});
+                setTimeout(()=>srv.close(),100);
+            }catch(e){reject(e);} });
+        const { port } = new URL(CONFIG.OAUTH_REDIRECT_URI);
+        srv.listen(Number(port)||38573,'127.0.0.1',()=>openInBrowser(authURL.toString()));
     });
 
-    return await fetchToken(as, client, {
-        grant_type: 'authorization_code',
-        code,
-        redirect_uri: CONFIG.OAUTH_REDIRECT_URI,
-        code_verifier,
-    });
+
+    return await fetchToken(conf,client,{grant_type:'authorization_code',code,redirect_uri:CONFIG.OAUTH_REDIRECT_URI,code_verifier});
 }
 
 // ---------------------------- PROXY CORE ---------------------------
