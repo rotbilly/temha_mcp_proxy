@@ -38,7 +38,27 @@ function writeJSON(path,obj){ writeFileSync(path, JSON.stringify(obj,null,2),'ut
 
 function b64url(buf){ return Buffer.from(buf).toString('base64').replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); }
 function genPKCE(){ const code_verifier=b64url(randomBytes(32)); const challenge=createHash('sha256').update(code_verifier).digest(); return {code_verifier, code_challenge:b64url(challenge)}; }
-function openInBrowser(u){ const cmd=process.platform==='darwin'?'open':process.platform==='win32'?'start':'xdg-open'; try{spawn(cmd,[u],{stdio:'ignore',shell:true,detached:true});}catch{console.error('[proxy] Open manually:',u);} }
+
+// ✅ 안전한 브라우저 오프너 (쿼리 손실 방지)
+function openInBrowser(u){
+    try {
+        if (process.platform === 'win32') {
+            // cmd /c start "" "URL"
+            spawn('cmd', ['/c', 'start', '', u], {
+                stdio: 'ignore',
+                windowsVerbatimArguments: true,
+                shell: false,
+                detached: true
+            }).unref();
+        } else if (process.platform === 'darwin') {
+            spawn('open', [u], { stdio: 'ignore', shell: false, detached: true }).unref();
+        } else {
+            spawn('xdg-open', [u], { stdio: 'ignore', shell: false, detached: true }).unref();
+        }
+    } catch {
+        console.error('[proxy] Open manually:', u);
+    }
+}
 
 // --------------------------- DISCOVERY (RFC 9728 + 8414) ---------------------------
 async function fetchJSON(u){ const r = await fetch(u); if(!r.ok) throw new Error(`${u} ${r.status}`); return r.json(); }
@@ -138,6 +158,7 @@ async function ensureToken(as,client){
 async function interactiveLogin(as,client){
     const {code_verifier,code_challenge}=genPKCE(); const state=b64url(randomBytes(16));
     const authURL=new URL(as.authorization_endpoint);
+    // 필요 시 기존 쿼리를 보존하면서 추가; 일반적으로 authorization_endpoint는 쿼리가 없음
     authURL.searchParams.set('response_type','code');
     authURL.searchParams.set('client_id',client.client_id);
     authURL.searchParams.set('redirect_uri',CONFIG.OAUTH_REDIRECT_URI);
@@ -159,7 +180,8 @@ async function interactiveLogin(as,client){
                 setTimeout(()=>srv.close(),100);
             }catch(e){reject(e);} });
         const { port } = new URL(CONFIG.OAUTH_REDIRECT_URI);
-        srv.listen(Number(port)||38573,'127.0.0.1',()=>openInBrowser(authURL.toString()));
+        // ✅ 쿼리 손실 방지를 위해 href 사용 + 안전한 오프너
+        srv.listen(Number(port)||38573,'127.0.0.1',()=>openInBrowser(authURL.href));
     });
 
     return await fetchToken(as,client,{grant_type:'authorization_code',code,redirect_uri:CONFIG.OAUTH_REDIRECT_URI,code_verifier});
