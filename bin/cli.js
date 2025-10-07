@@ -57,15 +57,15 @@ function openInBrowser(url) {
         console.error('[proxy] Please open this URL manually:\n', url);
     }
 }
-
-function openInBrowser(u) {
-    const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
-    try {
-        spawn(cmd, [u], {stdio: 'ignore', shell: true, detached: true});
-    } catch {
-        console.error('[proxy] Open manually:', u);
-    }
-}
+//
+// function openInBrowser(u) {
+//     const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
+//     try {
+//         spawn(cmd, [u], {stdio: 'ignore', shell: true, detached: true});
+//     } catch {
+//         console.error('[proxy] Open manually:', u);
+//     }
+// }
 // --------------------------- DISCOVERY (RFC 9728 + 8414) ---------------------------
 async function fetchJSON(u){ const r = await fetch(u); if(!r.ok) throw new Error(`${u} ${r.status}`); return r.json(); }
 
