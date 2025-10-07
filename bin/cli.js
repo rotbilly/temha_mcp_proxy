@@ -41,10 +41,11 @@ function genPKCE(){ const code_verifier=b64url(randomBytes(32)); const challenge
 
 function openInBrowser(url) {
     const platform = process.platform;
+    console.error(url)
     try {
         if (platform === 'win32') {
             // Use cmd.exe 'start' with empty title and quoted URL to avoid & being parsed
-            spawn('cmd', ['/c', 'start', '', `"${url}"`], {
+            spawn('cmd', ['/c', 'start', '', `${url}`], {
                 stdio: 'ignore',
                 detached: true,
             });
