@@ -39,35 +39,44 @@ function writeJSON(path,obj){ writeFileSync(path, JSON.stringify(obj,null,2),'ut
 function b64url(buf){ return Buffer.from(buf).toString('base64').replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); }
 function genPKCE(){ const code_verifier=b64url(randomBytes(32)); const challenge=createHash('sha256').update(code_verifier).digest(); return {code_verifier, code_challenge:b64url(challenge)}; }
 
-// function openInBrowser(url) {
-//     const platform = process.platform;
-//     console.error(url)
-//     try {
-//         if (platform === 'win32') {
-//             // Use cmd.exe 'start' with empty title and quoted URL to avoid & being parsed
-//             spawn('cmd', ['/c', 'start', '', `${url}`], {
-//                 stdio: 'ignore',
-//                 detached: true,
-//             });
-//         } else if (platform === 'darwin') {
-//             spawn('open', [url], { stdio: 'ignore', detached: true });
-//         } else {
-//             spawn('xdg-open', [url], { stdio: 'ignore', detached: true });
-//         }
-//     } catch (e) {
-//         console.error('[proxy] Please open this URL manually:\n', url);
-//     }
-// }
-//
-function openInBrowser(u) {
-    console.log("openInBrowser", u)
-    const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
+function openInBrowser(url) {
+    const platform = process.platform;
+    console.error(url)
     try {
-        spawn(cmd, [u], {stdio: 'ignore', shell: true, detached: true});
-    } catch {
-        console.error('[proxy] Open manually:', u);
+        if (platform === 'win32') {
+            // Use cmd.exe 'start' with empty title and quoted URL to avoid & being parsed
+            // spawn('cmd', ['/c', 'start', '', `${url}`], {
+            //     stdio: 'ignore',
+            //     detached: true,
+            // });
+
+            const command = `start "" "${url}"`;
+
+            // shell: true를 사용하면 쉘이 명령을 해석하므로, 인용 문제가 사라집니다.
+            spawn(command, [], {
+                stdio: 'ignore',
+                detached: true,
+                shell: true, // ⭐️ 이 옵션이 핵심입니다.
+            });
+        } else if (platform === 'darwin') {
+            spawn('open', [url], { stdio: 'ignore', detached: true });
+        } else {
+            spawn('xdg-open', [url], { stdio: 'ignore', detached: true });
+        }
+    } catch (e) {
+        console.error('[proxy] Please open this URL manually:\n', url);
     }
 }
+//
+// function openInBrowser(u) {
+//     console.log("openInBrowser", u)
+//     const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
+//     try {
+//         spawn(cmd, [u], {stdio: 'ignore', shell: true, detached: true});
+//     } catch {
+//         console.error('[proxy] Open manually:', u);
+//     }
+// }
 // --------------------------- DISCOVERY (RFC 9728 + 8414) ---------------------------
 async function fetchJSON(u){ const r = await fetch(u); if(!r.ok) throw new Error(`${u} ${r.status}`); return r.json(); }
 
