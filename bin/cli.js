@@ -52,16 +52,15 @@ function openInBrowser(url) {
 
             const command = `start "" "${url}"`;
 
-            // shell: true를 사용하면 쉘이 명령을 해석하므로, 인용 문제가 사라집니다.
             spawn(command, [], {
                 stdio: 'ignore',
                 detached: true,
-                shell: true, // ⭐️ 이 옵션이 핵심입니다.
+                shell: true,
             });
         } else if (platform === 'darwin') {
-            spawn('open', [url], { stdio: 'ignore', detached: true });
+            spawn('open', [url], { stdio: 'ignore', detached: true, shell: true });
         } else {
-            spawn('xdg-open', [url], { stdio: 'ignore', detached: true });
+            spawn('xdg-open', [url], { stdio: 'ignore', detached: true, shell: true });
         }
     } catch (e) {
         console.error('[proxy] Please open this URL manually:\n', url);
