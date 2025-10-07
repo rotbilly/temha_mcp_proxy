@@ -46,9 +46,7 @@ function openInBrowser(url) {
             // Use cmd.exe 'start' with empty title and quoted URL to avoid & being parsed
             spawn('cmd', ['/c', 'start', '', `"${url}"`], {
                 stdio: 'ignore',
-                windowsVerbatimArguments: true,
                 detached: true,
-                shell: false,
             });
         } else if (platform === 'darwin') {
             spawn('open', [url], { stdio: 'ignore', detached: true });
@@ -57,6 +55,15 @@ function openInBrowser(url) {
         }
     } catch (e) {
         console.error('[proxy] Please open this URL manually:\n', url);
+    }
+}
+
+function openInBrowser(u) {
+    const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
+    try {
+        spawn(cmd, [u], {stdio: 'ignore', shell: true, detached: true});
+    } catch {
+        console.error('[proxy] Open manually:', u);
     }
 }
 // --------------------------- DISCOVERY (RFC 9728 + 8414) ---------------------------
